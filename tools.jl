@@ -26,25 +26,26 @@ function buildC_propagate_node(n)
     function buildC_turn_on_next_node(node_source, node_target, edge)
         offset_edge = 1
         offset_node = offset_edge + N_edge
-        offset_node_aux = offset_node + N_node
-        c1 = cnot(offset_node + node_target, offset_node_aux + node_target)
+        node_aux = offset_node + N_node + 1
+        c1 = cnot(offset_node + node_target, node_aux)
 
-        c1_1 = put(offset_node_aux + node_target => X)
-
+        c1_1 = put(node_aux => X)
 
         c2 = cnot(
-            (offset_node + node_source, offset_node_aux + node_target, offset_edge + edge),
+            (offset_node + node_source, node_aux, offset_edge + edge),
             offset_node + node_target
         )
 
-        c3 = put(offset_node_aux + node_target => H)
-        m = Yao.Measure(; locs=offset_node_aux + node_target, resetto=bit"0")
+        c3 = put(node_aux => H)
+        m = Yao.Measure(; locs=node_aux, resetto=bit"0")
 
         return chain(c1, c1_1, c2, c3, m)
     end
 
     # circuit for propaget node over all edges
-    circuit = chain(buildC_turn_on_next_node(n1, n2, e) for (e, (n1,n2)) in enumerate(edge))
+    circuit1 = chain(buildC_turn_on_next_node(n1, n2, e) for (e, (n1,n2)) in enumerate(edge))
+    circuit2 = chain(buildC_turn_on_next_node(n2, n1, e) for (e, (n1,n2)) in enumerate(edge))
+    circuit = chain(circuit1, circuit2)
     circuit = circuit(n)
 
     # repeat this propagtion N_node-1 times
@@ -53,6 +54,7 @@ function buildC_propagate_node(n)
 
     return circuit
 end
+
 
 function buildC_connected(n)
     offset_node = 1 + N_edge
@@ -96,8 +98,8 @@ function analzye(s::Vector)
         bs_interest = bs_edge * bs_label
 
         # # info 
-        # bs = [bs_rest, bs_edge, bs_label]
-        # println("""$i: $(join(bs, "_"))""")
+        bs = [bs_rest, bs_edge, bs_label]
+        println("""$i: $(join(bs, "_"))""")
 
         if isnothing(ψ)
             ψ = q * YaoSym.ket_m(bs_interest)

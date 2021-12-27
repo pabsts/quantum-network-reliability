@@ -2,7 +2,7 @@ using Yao #, YaoBlocks
 using YaoSym, SymEngine
 using YaoPlots, YaoExtensions
 
-import Cairo
+import Cairo  # needed for plotting
 #using Compose
 
 # using Graphs, SimpleWeightedGraphs
@@ -12,9 +12,9 @@ include("tools.jl")
 
 # graph
 # -------
-N_node  = 3
+N_node  = 4
 node = 1:N_node
-edge = [(1,2), (2,3)]
+edge = [(1,2), (2,3), (1,3), (1, 4)]
 N_edge = length(edge)
 
 failure_default = 0.2
@@ -26,10 +26,10 @@ failure = repeat([failure_default], N_edge)
 N_batch = 1
 phi_edge = zero_state(N_edge; nbatch=N_batch)
 phi_node = zero_state(N_node; nbatch=N_batch)
-phi_node_aux = zero_state(N_node; nbatch=N_batch)
+phi_aux = zero_state(1; nbatch=N_batch)
 phi_label = zero_state(1; nbatch=N_batch)
 
-phi = join(phi_node_aux, phi_node, phi_edge, phi_label)
+phi = join(phi_aux, phi_node, phi_edge, phi_label)
 N_qbit = length(phi.state) |> log2 |> Int
 
 
