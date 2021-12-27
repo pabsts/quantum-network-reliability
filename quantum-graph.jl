@@ -1,49 +1,85 @@
-using Yao, YaoSym, SymEngine
-
+using Yao #, YaoBlocks
+using YaoSym, SymEngine
 using YaoPlots, YaoExtensions
+
 import Cairo
-using Compose
+#using Compose
 
-using Graphs, SimpleWeightedGraphs
-import SparseArrays
-# start with a graph
+# using Graphs, SimpleWeightedGraphs
+# import SparseArrays
 
+include("tools.jl")
 
+# graph
+# -------
 N_node  = 3
-failure = 0.2
+node = 1:N_node
+edge = [(1,2), (2,3)]
+N_edge = length(edge)
 
-g = SimpleWeightedGraph(N_node)  # or use `SimpleWeightedDiGraph` for directed graphs
-add_edge!(g, 1, 2, failure)
-add_edge!(g, 2, 3, failure)
-# add_edge!(g, 1, 3, 2.0)
-
-N_edge = g.weights |> SparseArrays.nnz
+failure_default = 0.2
+failure = repeat([failure_default], N_edge)
 
 
 # initial quantum state
-phi_edge = szero_state(N_edge)
-phi_node = szero_state(N_node)
-phi_node_aux = szero_state(N_node)
-phi_label = szero_state(1)
+# ---------------------
+N_batch = 1
+phi_edge = zero_state(N_edge; nbatch=N_batch)
+phi_node = zero_state(N_node; nbatch=N_batch)
+phi_node_aux = zero_state(N_node; nbatch=N_batch)
+phi_label = zero_state(1; nbatch=N_batch)
+
+phi = join(phi_node_aux, phi_node, phi_edge, phi_label)
+N_qbit = length(phi.state) |> log2 |> Int
 
 
-# build circuit
-function R_init(f::Real) 
-    θ = 2*asin(sqrt(f))
-    return Ry(θ)
+# step 1: build circuit
+circuit = []
+c = buildC_prepare_edge(N_qbit)
+push!(circuit, c)
+
+# step 2: turn on one node
+c = buildC_turn_on_node(N_qbit)
+push!(circuit, c)
+
+# step 3: propagate turned-on node across graph
+c = buildC_propagate_node(N_qbit)
+push!(circuit, c)
+
+# step 4: assign label qubit
+c = buildC_connected(N_qbit)
+push!(circuit, c)
+
+# # step 5: measure label qubit
+# c = Yao.Measure(N_qbit; locs=1)
+# push!(circuit, c)
+
+
+# analyze each step
+# -----------------
+# step 0: visualize state
+analzye(phi)
+
+# apply circuit up to step `istep`
+istep = 4
+c = circuit[1:istep] |> chain
+plot(c)
+phi_final = apply(phi, c)
+analzye(phi_final)
+
+# check `phi_final` is a pure-state
+let ρ = density_matrix(phi_final).state[:,:,1]
+    @show trnorm(ρ * ρ)
 end
 
-circuit = repeat(N_edge, R_init(failure))
-plot(circuit)
 
+# last step calculate reduced density matrix of label qubit
+rdm = (focus!(phi_final, [1]) |> density_matrix |> state)[:,:, 1]
+if sum(abs.(imag.(rdm)))>0
+    @warn "reduced density matrix has has imaginary coefficients"   
+else
+    rdm = real.(rdm)
+end
 
-s = apply(ket"0", R_init(failure))
-
-(bra"0" * apply(ket"0", R_init(failure))) .^2
-
-
-plot(H)
-
-
-apply(phi_edge, circuit)
-plot(qft_circuit(5))
+@info "network reliability is $(rdm[2,2])"
+display(rdm)
