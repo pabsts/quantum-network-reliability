@@ -1,52 +1,127 @@
+function add_edges!(graph, edges::Vector, failure_default)
+    for x in edges        
+        failure = if length(x)==3 
+            x[3]
+        else
+            failure_default
+        end
 
-function R_init(f::Real) 
-    θ = 2*acos(sqrt(f))
+        add_edge!(graph, x[1], x[2], failure)
+    end
+    return graph
+end
+
+function get_initial_state(graph)
+    N_batch = 1
+
+    N_edge = Graphs.ne(graph)
+    N_node = Graphs.nv(graph)
+    
+    phi_label = zero_state(1; nbatch=N_batch)
+    phi_edge = zero_state(N_edge; nbatch=N_batch)
+    phi_node = zero_state(N_node; nbatch=N_batch)
+    phi_aux = zero_state(1; nbatch=N_batch)
+    
+    return join(phi_aux, phi_node, phi_edge, phi_label)
+end
+
+function required_qbits(graph)
+    N_edge = Graphs.ne(graph)
+    N_node = Graphs.nv(graph)
+    return 1 + N_edge + N_node + 1
+end
+
+
+function get_quantum_circuit(graph::AbstractSimpleWeightedGraph; steps=1:5)
+
+    circuit = []
+
+    for s in 1:5
+        s ∉ steps && continue
+
+        group = if s==1 # step 1: build circuit
+            buildC_prepare_edge(graph)
+        elseif s==2 # step 2: turn on one node
+            buildC_turn_on_node(graph)
+        elseif s==3 # step 3: propagate turned-on node across graph
+            buildC_propagate_node(graph)
+        elseif s==4 # step 4: assign label qubit
+            buildC_connected(graph)
+        elseif s==5 # step 5: measure label qubit
+            N_qbits = required_qbits(graph)
+            Yao.Measure(N_qbit; locs=1)       
+        else
+            continue
+        end
+
+        push!(circuit, group)
+    end
+
+    # join steps
+    circuit = chain(circuit)
+
+    return circuit
+end
+
+
+function R_init(failure::Real) 
+    θ = 2*acos(sqrt(failure))
     return Ry(θ)
 end
 
 
-function buildC_prepare_edge(n)    
-     offset = 1
-    
-    return chain(n, 
-        put(i+offset => R_init(failure[i])) for i=1:N_edge
+function buildC_prepare_edge(graph)
+    n = required_qbits(graph)
+    qbit_offset = 1
+
+    return chain(n,
+        put(i+qbit_offset => R_init(e.weight)) for (i,e) in enumerate(edges(graph))
     )
 end
 
 
-function buildC_turn_on_node(n, node_id=1)
+function buildC_turn_on_node(graph; node=1)
+    n = required_qbits(graph)
+    N_edge = Graphs.ne(graph)
     qbit_offset = 1 + N_edge
 
-    return put(n, qbit_offset + node_id => X)
+    return put(n, qbit_offset + node => X)
 end
 
 
-function buildC_propagate_node(n)
+function buildC_propagate_node(graph)
+    n = required_qbits(graph)
+    N_node = Graphs.nv(graph)
+    N_edge = Graphs.ne(graph)
 
     function buildC_turn_on_next_node(node_source, node_target, edge)
         offset_edge = 1
         offset_node = offset_edge + N_edge
         node_aux = offset_node + N_node + 1
+
         c1 = cnot(offset_node + node_target, node_aux)
+        c2 = put(node_aux => X)
 
-        c1_1 = put(node_aux => X)
-
-        c2 = cnot(
+        c3 = cnot(
             (offset_node + node_source, node_aux, offset_edge + edge),
             offset_node + node_target
         )
 
-        c3 = put(node_aux => H)
+        c4 = put(node_aux => H)
         m = Yao.Measure(; locs=node_aux, resetto=bit"0")
 
-        return chain(c1, c1_1, c2, c3, m)
+        return chain(c1, c2, c3, c4, m)
     end
 
     # circuit for propaget node over all edges
-    circuit1 = chain(buildC_turn_on_next_node(n1, n2, e) for (e, (n1,n2)) in enumerate(edge))
-    circuit2 = chain(buildC_turn_on_next_node(n2, n1, e) for (e, (n1,n2)) in enumerate(edge))
-    circuit = chain(circuit1, circuit2)
-    circuit = circuit(n)
+    elements = []
+    for (i, e) in enumerate(edges(graph))
+        circuit1 = buildC_turn_on_next_node(e.src, e.dst, i)
+        circuit2 = buildC_turn_on_next_node(e.dst, e.src, i)
+        circuit12 = chain(n, circuit1, circuit2)
+        push!(elements, circuit12)
+    end
+    circuit = chain(elements)
 
     # repeat this propagtion N_node-1 times
     circuit = repeat([circuit], N_node-1)
@@ -56,16 +131,17 @@ function buildC_propagate_node(n)
 end
 
 
-function buildC_connected(n)
-    offset_node = 1 + N_edge
+function buildC_connected(graph)
+    n = required_qbits(graph)
+    N_node = Graphs.nv(graph)
+    N_edge = Graphs.ne(graph)
+    qbit_offset = 1 + N_edge
 
     return cnot(n,
-        offset_node .+ (1:N_node),
+        qbit_offset .+ (1:N_node),
         1
     )
 end
-
-
 
 
 # Analyzing state
@@ -111,3 +187,49 @@ function analzye(s::Vector)
     return ψ
 end
 
+
+
+"""
+Implement naive prute-force approach
+"""
+function network_reliability(g::Graphs.Graph, failure; level=0)::Real
+    
+    # if level > 2
+    #     return 0.0
+    # end
+
+    ncomp = Graphs.connected_components(g)
+    if length(ncomp)>1
+        return 0.0
+    end
+    
+    # probability of current subgraph
+
+    r = (1.0-failure) ^ Graphs.ne(g)   
+    ne = Graphs.ne(g)
+    # @show r, ne
+
+    # remove an edge and check if it is still fully connected
+    for e in edges(g)
+        g1 = copy(g)
+        rem_edge!(g1, e)
+        
+
+        ncomp = Graphs.connected_components(g1)
+        if length(ncomp)>1 # not connected
+            continue
+
+        else # subgraph is still fully connected
+
+            r_sub = network_reliability(g1, failure; level=level+1) 
+            # add reliability of subgraph (weighted by failure of current removed edge)            
+            r += r_sub * failure / (level+1)  # divide by combinatorial factor
+
+            # if r_sub>0
+            #     @show ne, e, r, r_sub
+            # end
+        end
+    end
+
+    return r
+end 
